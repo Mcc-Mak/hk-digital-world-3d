@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>HK Digital Twin - 效能優化版 | 並行載入 + 自動GC</title>
+    <title>HK Digital Twin - 效能優化版 | 並行載入 + 距離卸載</title>
     <style>
         body { margin: 0; overflow: hidden; font-family: monospace; background-color: #06080e; }
         #info {
@@ -91,8 +91,8 @@
     <div class="stats-panel" id="stats-panel">
         📊 效能監控<br>
         FPS: <span id="fps">--</span><br>
-        🧩 已載入: <span id="loaded-count">0</span>/<span id="total-count">0</span><br>
-        🗑️ GC 次數: <span id="gc-count">0</span>
+        🧩 記憶體: <span id="mem-count">0</span> 個模型<br>
+        🗑️ 卸載次數: <span id="gc-count">0</span>
     </div>
     <div class="controls">
         🖱️ 左鍵旋轉 | 右鍵平移 | 滾輪縮放
@@ -100,7 +100,7 @@
     <div class="debug" id="debug">
         ⚙️ 等待引擎啟動...
     </div>
-    <button id="manual-gc-btn">🗑️ 手動清理記憶體</button>
+    <button id="manual-gc-btn">🗑️ 強制清理遠景</button>
 
     <script type="importmap">
         {
@@ -119,9 +119,10 @@
         
         // ========== 配置參數 ==========
         const BASE_PATH = 'https://pub-d1e0333f70164895aaa658884b8735dd.r2.dev/wong-tai-sin';
-        const CONCURRENT_LOAD_LIMIT = 6;      // 並行載入數量 (6個同時下載)
+        const CONCURRENT_LOAD_LIMIT = 6;      // 並行載入數量
         const FRUSTUM_CULLING_INTERVAL = 15;   // 視錐體裁減更新間隔 (幀數)
-        const FORCE_GC_INTERVAL = 80;          // 強制GC間隔 (載入數量)
+        const UNLOAD_DISTANCE = 800;           // 超過此距離 (米) 自動卸載模型
+        const STREAMING_CHECK_INTERVAL = 60;   // 距離卸載檢查間隔 (幀數)
         const VISIBLE_DISTANCE = 25000;        // 最大可見距離 (備用)
         
         // ========== 建築物註冊表 ==========
@@ -238,7 +239,7 @@
         let fps = 60;
         let successCount = 0;
         let failedCount = 0;
-        let gcCount = 0;
+        let unloadCount = 0;  // 卸載次數計數
         let activeLoads = 0;
         let loadQueue = [...models];
         let isLoading = true;
@@ -247,88 +248,106 @@
         const frustum = new THREE.Frustum();
         const projScreenMatrix = new THREE.Matrix4();
         let cullingEnabled = true;
-        let lastCameraPosition = new THREE.Vector3();
+        
+        // 維護已載入模型 Map (name -> group)
+        const loadedModels = new Map();
         
         // 更新UI元素
         const statusSpan = document.getElementById('status');
         const positionSpan = document.getElementById('position-info');
         const debugSpan = document.getElementById('debug');
         const fpsSpan = document.getElementById('fps');
-        const loadedCountSpan = document.getElementById('loaded-count');
-        const totalCountSpan = document.getElementById('total-count');
+        const memCountSpan = document.getElementById('mem-count');
         const gcCountSpan = document.getElementById('gc-count');
         
-        totalCountSpan.textContent = models.length;
-        
-        // ========== 垃圾回收函數 (完整釋放資源) ==========
-        function performManualGC(force = false) {
-            let releasedMeshes = 0;
-            let releasedMaterials = 0;
-            let releasedGeometries = 0;
+        // ========== 卸載單個模型 (完整清理) ==========
+        function unloadModel(model) {
+            if (!model || !model.parent) return;
             
-            // 遍歷所有模型，釋放不可見或標記為待清理的資源
-            masterGroup.children.forEach(child => {
-                if (!child.visible || force) {
-                    child.traverse(obj => {
-                        if (obj.isMesh) {
-                            // 釋放幾何體
-                            if (obj.geometry) {
-                                obj.geometry.dispose();
-                                releasedGeometries++;
-                            }
-                            // 釋放材質
-                            if (obj.material) {
-                                if (Array.isArray(obj.material)) {
-                                    obj.material.forEach(mat => {
-                                        if (mat) {
-                                            mat.dispose();
-                                            releasedMaterials++;
-                                        }
-                                    });
-                                } else {
-                                    obj.material.dispose();
-                                    releasedMaterials++;
-                                }
-                            }
-                            releasedMeshes++;
+            model.traverse(child => {
+                if (child.isMesh) {
+                    if (child.geometry) child.geometry.dispose();
+                    if (child.material) {
+                        if (Array.isArray(child.material)) {
+                            child.material.forEach(m => m.dispose());
+                        } else {
+                            child.material.dispose();
                         }
-                    });
-                    
-                    // 只有在強制清理或距離過遠時才從場景移除
-                    if (force && child.parent) {
-                        masterGroup.remove(child);
                     }
                 }
             });
             
-            // 清空Three.js內部緩存
-            THREE.Cache.clear();
+            model.parent.remove(model);
             
-            // 嘗試請求瀏覽器GC (僅在開發環境或標誌啟用時)
+            // 從已載入列表中移除
+            const name = model.userData.name;
+            if (name && loadedModels.has(name)) {
+                loadedModels.delete(name);
+            }
+        }
+        
+        // ========== 根據距離卸載遠處模型 ==========
+        function updateDistanceUnloading() {
+            if (isLoading) return; // 載入過程中不卸載
+            
+            const camPos = camera.position;
+            const toUnload = [];
+            
+            loadedModels.forEach((group, name) => {
+                const center = group.userData.center;
+                if (!center) return;
+                
+                const dist = camPos.distanceTo(center);
+                if (dist > UNLOAD_DISTANCE) {
+                    toUnload.push(group);
+                }
+            });
+            
+            if (toUnload.length > 0) {
+                toUnload.forEach(model => {
+                    unloadModel(model);
+                    unloadCount++;
+                });
+                gcCountSpan.textContent = unloadCount;
+                debugSpan.innerHTML = `🗑️ 自動卸載 ${toUnload.length} 個遠景模型 | 當前保留: ${loadedModels.size} 個`;
+            }
+            
+            memCountSpan.textContent = loadedModels.size;
+        }
+        
+        // ========== 手動強制清理所有遠景 (保留近景) ==========
+        function performManualGC() {
+            if (isLoading) return;
+            
+            const camPos = camera.position;
+            let released = 0;
+            
+            // 複製一份以避免迭代時修改
+            const allLoaded = Array.from(loadedModels.values());
+            allLoaded.forEach(group => {
+                const center = group.userData.center;
+                if (!center) return;
+                
+                if (camPos.distanceTo(center) > UNLOAD_DISTANCE) {
+                    unloadModel(group);
+                    released++;
+                }
+            });
+            
+            unloadCount += released;
+            gcCountSpan.textContent = unloadCount;
+            debugSpan.innerHTML = `🧹 手動清理完成: 卸載 ${released} 個模型 | 保留: ${loadedModels.size} 個`;
+            
+            // 主動觸發 GC (如果可用)
             if (window.gc) {
                 window.gc();
             }
-            
-            gcCount++;
-            gcCountSpan.textContent = gcCount;
-            
-            if (releasedMeshes > 0 || releasedMaterials > 0) {
-                debugSpan.innerHTML = `🗑️ GC #${gcCount}: 釋放 ${releasedMeshes} 網格 | ${releasedMaterials} 材質 | ${releasedGeometries} 幾何體`;
-                setTimeout(() => {
-                    if (debugSpan.innerHTML.includes('GC')) {
-                        debugSpan.innerHTML = `✅ 系統運行中 | 可見模型: ${masterGroup.children.filter(c => c.visible).length}`;
-                    }
-                }, 2000);
-            }
-            
-            return { releasedMeshes, releasedMaterials, releasedGeometries };
         }
         
         // ========== 視錐體裁減更新 ==========
         function updateFrustumCulling() {
             if (!cullingEnabled) return;
             
-            // 更新視錐體矩陣
             camera.updateMatrixWorld();
             camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
             projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -338,28 +357,27 @@
             let visibleCount = 0;
             let culledCount = 0;
             
-            masterGroup.children.forEach(model => {
-                if (model.userData.center && model.userData.boundingSphere) {
-                    // 距離裁減 (備用)
-                    const distance = cameraPos.distanceTo(model.userData.center);
-                    const withinDistance = distance < VISIBLE_DISTANCE;
-                    
-                    // 視錐體測試
-                    const inFrustum = frustum.intersectsSphere(model.userData.boundingSphere);
-                    const shouldBeVisible = withinDistance && inFrustum;
-                    
-                    if (model.visible !== shouldBeVisible) {
-                        model.visible = shouldBeVisible;
-                    }
-                    
-                    if (shouldBeVisible) visibleCount++;
-                    else culledCount++;
+            // 只對已載入的模型進行視錐剔除
+            loadedModels.forEach(group => {
+                const center = group.userData.center;
+                const sphere = group.userData.boundingSphere;
+                if (!center || !sphere) return;
+                
+                const distance = cameraPos.distanceTo(center);
+                const withinDistance = distance < VISIBLE_DISTANCE;
+                const inFrustum = frustum.intersectsSphere(sphere);
+                const shouldBeVisible = withinDistance && inFrustum;
+                
+                if (group.visible !== shouldBeVisible) {
+                    group.visible = shouldBeVisible;
                 }
+                
+                if (shouldBeVisible) visibleCount++;
+                else culledCount++;
             });
             
-            // 更新調試信息 (降低更新頻率)
             if (frameCount % 30 === 0) {
-                debugSpan.innerHTML = `🎯 視錐體裁減 | 可見: ${visibleCount} | 隱藏: ${culledCount} | FPS: ${fps}`;
+                debugSpan.innerHTML = `🎯 視錐體 | 可見: ${visibleCount} | 隱藏: ${culledCount} | 記憶體: ${loadedModels.size} 個`;
             }
         }
         
@@ -389,13 +407,12 @@
                 (gltf) => {
                     const obj = gltf.scene;
                     
-                    // 優化材質設定 (減少著色器開銷)
+                    // 優化材質設定
                     obj.traverse(child => {
                         if (child.isMesh) {
                             child.castShadow = false;
                             child.receiveShadow = false;
                             if (child.material) {
-                                // 簡化材質屬性
                                 child.material.roughness = 0.9;
                                 child.material.metalness = 0.1;
                                 if (child.material.map) {
@@ -405,22 +422,19 @@
                         }
                     });
                     
-                    // 計算包圍球和中心點 (用於裁減)
+                    // 計算包圍球和中心點
                     const boundingSphere = computeBoundingSphere(obj);
                     obj.userData.center = boundingSphere.center.clone();
                     obj.userData.boundingSphere = boundingSphere;
                     obj.userData.loaded = true;
+                    obj.userData.name = model.name;
                     
                     masterGroup.add(obj);
+                    loadedModels.set(model.name, obj);  // 記錄到 Map
                     successCount++;
                     
-                    // 定期執行GC
-                    if (successCount % FORCE_GC_INTERVAL === 0) {
-                        setTimeout(() => performManualGC(false), 100);
-                    }
-                    
                     // 更新UI
-                    loadedCountSpan.textContent = successCount;
+                    memCountSpan.textContent = loadedModels.size;
                     statusSpan.innerHTML = `📦 並行載入中 (${activeLoads} 線程) | ${successCount}/${models.length} (${Math.round((successCount/models.length)*100)}%)`;
                     
                     if (successCount === 1 || successCount % 50 === 0) {
@@ -430,9 +444,7 @@
                     activeLoads--;
                     loadNextBatch();
                 },
-                (xhr) => {
-                    // 可選: 顯示進度
-                },
+                undefined, // 進度回調省略
                 (error) => {
                     console.warn(`⚠️ 載入失敗 [${model.name}]:`, error);
                     failedCount++;
@@ -449,13 +461,13 @@
         
         function finishLoading() {
             isLoading = false;
-            statusSpan.innerHTML = `✅ Draco 引擎完成 | 成功: ${successCount} | 失敗: ${failedCount}`;
+            statusSpan.innerHTML = `✅ 載入完成 | 成功: ${successCount} | 失敗: ${failedCount}`;
             
-            // 最終清理
+            // 載入完成後立即執行一次距離卸載，清理遠景
             setTimeout(() => {
-                performManualGC(true);
+                updateDistanceUnloading();
                 dracoLoader.dispose();
-                debugSpan.innerHTML = `✨ 載入完成 | 總模型: ${successCount} | 記憶體已優化`;
+                debugSpan.innerHTML = `✨ 載入完成 | 記憶體中保留 ${loadedModels.size} 個模型`;
             }, 500);
         }
         
@@ -476,7 +488,6 @@
             let optimalDistance = maxDimension / (2 * Math.tan(fovRad / 2)) * 1.2;
             optimalDistance = Math.min(Math.max(optimalDistance, 800), 8000);
             
-            // 只在初始或完成時調整相機
             if (successCount <= 10 || successCount === models.length) {
                 camera.position.set(center.x + optimalDistance * 0.6, center.y + optimalDistance * 0.4, center.z + optimalDistance * 0.6);
                 controls.target.copy(center);
@@ -505,27 +516,26 @@
         function animate() {
             requestAnimationFrame(animate);
             
-            controls.update(); // 只有當controls被更新時才需要
+            controls.update();
             updateFPS();
             
             // 定期更新視錐體裁減
-            frameIndex++;
             if (frameIndex % FRUSTUM_CULLING_INTERVAL === 0 && !isLoading) {
                 updateFrustumCulling();
             }
             
+            // 定期檢查距離卸載 (獨立於視錐)
+            if (frameIndex % STREAMING_CHECK_INTERVAL === 0 && !isLoading) {
+                updateDistanceUnloading();
+            }
+            
             renderer.render(scene, camera);
+            frameIndex++;
         }
         
         // ========== 手動GC按鈕 ==========
         document.getElementById('manual-gc-btn').addEventListener('click', () => {
-            const result = performManualGC(true);
-            debugSpan.innerHTML = `🧹 手動GC: 釋放 ${result.releasedMeshes} 網格, ${result.releasedMaterials} 材質`;
-            setTimeout(() => {
-                if (debugSpan.innerHTML.includes('手動GC')) {
-                    debugSpan.innerHTML = `✅ GC 完成 | 當前可見: ${masterGroup.children.filter(c => c.visible).length}`;
-                }
-            }, 1500);
+            performManualGC();
         });
         
         // ========== 窗口大小適配 ==========
@@ -553,14 +563,14 @@
         
         start();
         
-        // 定期自動GC (每60秒)
+        // 定期自動清理遠景 (每30秒)
         setInterval(() => {
             if (!isLoading) {
-                performManualGC(false);
+                updateDistanceUnloading();
             }
-        }, 60000);
+        }, 30000);
         
-        console.log('✅ HK Digital Twin 優化版已啟動 | 並行載入:', CONCURRENT_LOAD_LIMIT, '| GC間隔:', FORCE_GC_INTERVAL);
+        console.log('✅ HK Digital Twin 優化版已啟動 (距離卸載模式)');
     </script>
 </body>
 </html>
