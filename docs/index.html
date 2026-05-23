@@ -3,53 +3,96 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>HK Digital Twin - 即時距離卸載版 | 記憶體安全</title>
+    <title>HK Digital Twin - 效能優化版 | 並行載入 + 距離卸載</title>
     <style>
         body { margin: 0; overflow: hidden; font-family: monospace; background-color: #06080e; }
         #info {
-            position: fixed; top: 10px; left: 10px;
-            background: rgba(0,0,0,0.9); color: #00ffaa; padding: 12px; border-radius: 5px;
-            font-size: 11px; z-index: 1000; pointer-events: none; max-width: 420px;
-            border-left: 3px solid #00ffaa; backdrop-filter: blur(4px);
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.9);
+            color: #00ffaa;
+            padding: 12px;
+            border-radius: 5px;
+            font-size: 11px;
+            z-index: 1000;
+            pointer-events: none;
+            max-width: 420px;
+            border-left: 3px solid #00ffaa;
+            backdrop-filter: blur(4px);
         }
         .controls {
-            position: fixed; bottom: 10px; right: 10px;
-            background: rgba(0,0,0,0.7); color: white; padding: 5px 10px;
-            border-radius: 5px; font-size: 10px; z-index: 1000; font-family: monospace;
+            position: fixed;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 10px;
+            z-index: 1000;
+            font-family: monospace;
         }
         .debug {
-            position: fixed; bottom: 10px; left: 10px;
-            background: rgba(0,0,0,0.85); color: #ffaa44; padding: 8px 12px;
-            border-radius: 5px; font-size: 10px; z-index: 1000; font-family: monospace;
-            pointer-events: none; backdrop-filter: blur(4px);
+            position: fixed;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.85);
+            color: #ffaa44;
+            padding: 8px 12px;
+            border-radius: 5px;
+            font-size: 10px;
+            z-index: 1000;
+            font-family: monospace;
+            pointer-events: none;
+            backdrop-filter: blur(4px);
         }
         .stats-panel {
-            position: fixed; top: 10px; right: 10px;
-            background: rgba(0,0,0,0.8); color: #88ffaa; padding: 8px 12px;
-            border-radius: 5px; font-size: 10px; z-index: 1000; font-family: monospace;
-            text-align: right; pointer-events: none; backdrop-filter: blur(4px);
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.8);
+            color: #88ffaa;
+            padding: 8px 12px;
+            border-radius: 5px;
+            font-size: 10px;
+            z-index: 1000;
+            font-family: monospace;
+            text-align: right;
+            pointer-events: none;
+            backdrop-filter: blur(4px);
         }
         button {
-            position: fixed; bottom: 10px; right: 120px;
-            background: rgba(0,0,0,0.7); color: #ffaa44; border: 1px solid #ffaa44;
-            padding: 5px 10px; border-radius: 5px; font-size: 10px; cursor: pointer;
-            z-index: 1001; font-family: monospace;
+            position: fixed;
+            bottom: 10px;
+            right: 120px;
+            background: rgba(0,0,0,0.7);
+            color: #ffaa44;
+            border: 1px solid #ffaa44;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 10px;
+            cursor: pointer;
+            z-index: 1001;
+            font-family: monospace;
         }
-        button:hover { background: #ffaa44; color: #000; }
+        button:hover {
+            background: #ffaa44;
+            color: #000;
+        }
     </style>
 </head>
 <body>
     <div id="info">
-        🏙️ HK DIGITAL TWIN | 即時距離卸載<br>
+        🏙️ HK DIGITAL TWIN | 效能優化版<br>
         <span id="status">初始化 Draco 引擎...</span><br>
         <span id="position-info">定位中...</span>
     </div>
     <div class="stats-panel" id="stats-panel">
         📊 效能監控<br>
         FPS: <span id="fps">--</span><br>
-        🧩 記憶體中: <span id="mem-count">0</span> 模型<br>
-        🗑️ 已卸載: <span id="gc-count">0</span><br>
-        ⏳ 佇列中: <span id="queue-count">0</span>
+        🧩 記憶體: <span id="mem-count">0</span> 個模型<br>
+        🗑️ 卸載次數: <span id="gc-count">0</span>
     </div>
     <div class="controls">
         🖱️ 左鍵旋轉 | 右鍵平移 | 滾輪縮放
@@ -76,353 +119,458 @@
         
         // ========== 配置參數 ==========
         const BASE_PATH = 'https://pub-d1e0333f70164895aaa658884b8735dd.r2.dev/wong-tai-sin';
-        const CONCURRENT_LOAD_LIMIT = 6;       // 同時下載數
-        const FRUSTUM_CULLING_INTERVAL = 15;    // 視錐剔除間隔 (幀)
-        const UNLOAD_DISTANCE = 700;            // 超過此距離 (米) 立即卸載
-        const STREAMING_CHECK_INTERVAL = 45;    // 距離檢查間隔 (幀)
-        const VISIBLE_DISTANCE = 25000;         // 最大可見距離 (用於視錐剔除)
-        const MAX_LOADED_MODELS_SAFETY = 50;    // 安全上限 (僅在異常時觸發)
+        const CONCURRENT_LOAD_LIMIT = 6;      // 並行載入數量
+        const FRUSTUM_CULLING_INTERVAL = 15;   // 視錐體裁減更新間隔 (幀數)
+        const UNLOAD_DISTANCE = 800;           // 超過此距離 (米) 自動卸載模型
+        const STREAMING_CHECK_INTERVAL = 60;   // 距離卸載檢查間隔 (幀數)
+        const VISIBLE_DISTANCE = 25000;        // 最大可見距離 (備用)
         
         // ========== 建築物註冊表 ==========
         const buildingFolders = [
-            'B367542253101063A0','B367602231701063A0','B367642255001063A0','B367672245201063A0',
-            'B367702266101063A0','B367722259301063A0','B367802239101063A0','B367812231301063A0',
-            'B367852227401063A0','B367852256201063A0','B367892232102063A0','B367892254501063A0',
-            'B367892268701063A0','B367912250901063A0','B367942242801063A0','B367972257301063A0',
-            'B368012262201063A0','B368022224201063A0','B368022231101063A0','B368052245001063A0',
-            'B368072233801063A0','B368102253801063A0','B368132264501063A0','B368142261701063A0',
-            'B368172255501063A0','B368182237901063A0','B368232231401063A0','B368262248901063A0',
-            'B368262262901063A0','B368302226701063A0','B368322242301063A0','B368372265801063A0',
-            'B368422231701063A0','B368432260501063A0','B368442270401062A0','B368442271701063A0',
-            'B368452252601063A0','B368492257001063A0','B368532265202063A0','B368552237301063A0',
-            'B368932262201063A1','B369072269501063A0','B369102247801063A0','B369112256001063A0',
-            'B368592247401063A0','B368602235301063A0','B368632254301063A0','B368652264001063A0',
-            'B368692238201063A0','B368732258801063A0','B368762273901063A0','B368772271501063A0',
-            'B368812251001063A0','B368812255201063A0','B368832265901063A0','B368842241602063A0',
-            'B368852241901063A0','B369122263401063A0','B369142245201063A0','B369212260401063A0',
-            'B369232249601063A0','B369302258701063A0','B369422247101063A0','B369532263301063A0',
-            'B369592254901063A0','B369612263501063A0','B369622261001063A0','B369662256402063A0',
-            'B369662275201063A0','B369712276201063A0','B369822265501063A0','B369842258801063A0',
-            'B369902262801063A0','B369932235801063A0','B369992234701063A0','B370332244301063A0',
-            'B370342238001063A0','B370402237001063A0','B370452229401063A0','B370522229701063A0',
-            'B370642249502063A0','B370702248901063A0','B370832232901063A0','B370902246101063A0',
-            'B370942241601063A0','B370992246401063A0','B371072224501063A0','B371102233901063A0',
-            'B371132229301063A0','B371222237201063A0','B371242250101063A0','B371282245601063A0',
-            'B371292266501063A0','B371442222701063A0','B371482233101063A0','B371552247801063A0',
-            'B371552267801063A0','B371572238301063A0','B371582250701063A0','B371622247101063A0',
-            'B371712263601063A0','B371762260301063A0','B371832245401063A0','B371992271801063A0',
-            'B372042265201063A0','B372112234601063A0','B372112242701063A0','B372122248001063A0',
-            'B372142253801063A0','B372152221601063A0','B372162224901063A0','B372372279001063A0',
-            'B372422221602063A0','B372432238301063A0','B372442279302063A0','B372542269201063A0',
-            'B372562231801063A0','B372582242301063A0','B372762277301063A0','B372832223701063A0',
-            'B372832236201063A0','B372832243401063A0','B372852247701063A0','B372852254401063A0',
-            'B372912244201063A0','B372932242301063A0','B372952270301063A0','B372982245301063A0',
-            'B373032263901063A0','B373092252101063A0','B373122242301063A0','B373132271001063A0',
-            'B373302223701063A0','B373332276001063A0','B373332278201063A0','B373402244701063A0',
-            'B373432236001063A0','B373432273001063A0','B373452247701063A0','B373592223301063A0',
-            'B373612231401063A0','B373622247901063A0','B373632271801063A0','B373632275601063A0',
-            'B373652271201063A0','B373682227301063A0','B373682246601063A0','B373702258501063A0',
-            'B373842242201063A0','B373882247701063A0','B373962223002063A0','B373962226201063A0',
-            'B374092267501063A0','B374142233701063A0','B374162252401063A0','B374352256201063A0',
-            'B374782250901063A1','B374922241801063A0','B374942230601063A0','B374942235801063A0',
+            'B367542253101063A0', 'B367602231701063A0', 'B367642255001063A0', 'B367672245201063A0',
+            'B367702266101063A0', 'B367722259301063A0', 'B367802239101063A0', 'B367812231301063A0',
+            'B367852227401063A0', 'B367852256201063A0', 'B367892232102063A0', 'B367892254501063A0',
+            'B367892268701063A0', 'B367912250901063A0', 'B367942242801063A0', 'B367972257301063A0',
+            'B368012262201063A0', 'B368022224201063A0', 'B368022231101063A0', 'B368052245001063A0',
+            'B368072233801063A0', 'B368102253801063A0', 'B368132264501063A0', 'B368142261701063A0',
+            'B368172255501063A0', 'B368182237901063A0', 'B368232231401063A0', 'B368262248901063A0',
+            'B368262262901063A0', 'B368302226701063A0', 'B368322242301063A0', 'B368372265801063A0',
+            'B368422231701063A0', 'B368432260501063A0', 'B368442270401062A0', 'B368442271701063A0',
+            'B368452252601063A0', 'B368492257001063A0', 'B368532265202063A0', 'B368552237301063A0',
+            'B368932262201063A1', 'B369072269501063A0', 'B369102247801063A0', 'B369112256001063A0',
+            'B368592247401063A0', 'B368602235301063A0', 'B368632254301063A0', 'B368652264001063A0',
+            'B368692238201063A0', 'B368732258801063A0', 'B368762273901063A0', 'B368772271501063A0',
+            'B368812251001063A0', 'B368812255201063A0', 'B368832265901063A0', 'B368842241602063A0',
+            'B368852241901063A0', 'B369122263401063A0', 'B369142245201063A0', 'B369212260401063A0',
+            'B369232249601063A0', 'B369302258701063A0', 'B369422247101063A0', 'B369532263301063A0',
+            'B369592254901063A0', 'B369612263501063A0', 'B369622261001063A0', 'B369662256402063A0',
+            'B369662275201063A0', 'B369712276201063A0', 'B369822265501063A0', 'B369842258801063A0',
+            'B369902262801063A0', 'B369932235801063A0', 'B369992234701063A0', 'B370332244301063A0',
+            'B370342238001063A0', 'B370402237001063A0', 'B370452229401063A0', 'B370522229701063A0',
+            'B370642249502063A0', 'B370702248901063A0', 'B370832232901063A0', 'B370902246101063A0',
+            'B370942241601063A0', 'B370992246401063A0', 'B371072224501063A0', 'B371102233901063A0',
+            'B371132229301063A0', 'B371222237201063A0', 'B371242250101063A0', 'B371282245601063A0',
+            'B371292266501063A0', 'B371442222701063A0', 'B371482233101063A0', 'B371552247801063A0',
+            'B371552267801063A0', 'B371572238301063A0', 'B371582250701063A0', 'B371622247101063A0',
+            'B371712263601063A0', 'B371762260301063A0', 'B371832245401063A0', 'B371992271801063A0',
+            'B372042265201063A0', 'B372112234601063A0', 'B372112242701063A0', 'B372122248001063A0',
+            'B372142253801063A0', 'B372152221601063A0', 'B372162224901063A0', 'B372372279001063A0',
+            'B372422221602063A0', 'B372432238301063A0', 'B372442279302063A0', 'B372542269201063A0',
+            'B372562231801063A0', 'B372582242301063A0', 'B372762277301063A0', 'B372832223701063A0',
+            'B372832236201063A0', 'B372832243401063A0', 'B372852247701063A0', 'B372852254401063A0',
+            'B372912244201063A0', 'B372932242301063A0', 'B372952270301063A0', 'B372982245301063A0',
+            'B373032263901063A0', 'B373092252101063A0', 'B373122242301063A0', 'B373132271001063A0',
+            'B373302223701063A0', 'B373332276001063A0', 'B373332278201063A0', 'B373402244701063A0',
+            'B373432236001063A0', 'B373432273001063A0', 'B373452247701063A0', 'B373592223301063A0',
+            'B373612231401063A0', 'B373622247901063A0', 'B373632271801063A0', 'B373632275601063A0',
+            'B373652271201063A0', 'B373682227301063A0', 'B373682246601063A0', 'B373702258501063A0',
+            'B373842242201063A0', 'B373882247701063A0', 'B373962223002063A0', 'B373962226201063A0',
+            'B374092267501063A0', 'B374142233701063A0', 'B374162252401063A0', 'B374352256201063A0',
+            'B374782250901063A1', 'B374922241801063A0', 'B374942230601063A0', 'B374942235801063A0',
             'B374942247801063A0'
         ];
+        
         const infrastructureFolders = [
-            'I367402276207063A0','I367542276607063A0','I367722270007063A0','I368022216103063A0',
-            'I369622261407063A0','I369642256307063A0','I370012227803063A0','I371202232703063A0',
-            'I371612225103063A0','I371652259603063A1','I372042275602063A0','I372562226303063A0',
-            'I372632224903063A0','I372902266003063A0','I373002266403063A0','I373122268403063A0',
-            'I373272266403063A0','I373432226303063A0','I373432268903063A0','I373442257903063A1',
-            'I373602229103063A0','I373792271703063A1','I374032228603063A0'
+            'I367402276207063A0', 'I367542276607063A0', 'I367722270007063A0', 'I368022216103063A0',
+            'I369622261407063A0', 'I369642256307063A0', 'I370012227803063A0', 'I371202232703063A0',
+            'I371612225103063A0', 'I371652259603063A1', 'I372042275602063A0', 'I372562226303063A0',
+            'I372632224903063A0', 'I372902266003063A0', 'I373002266403063A0', 'I373122268403063A0',
+            'I373272266403063A0', 'I373432226303063A0', 'I373432268903063A0', 'I373442257903063A1',
+            'I373602229103063A0', 'I373792271703063A1', 'I374032228603063A0'
         ];
+        
         const waterbodyFolders = [
-            'W368192272607062A1','W368562273007062A1','W368782278903062A1','W369282250507062A1',
-            'W369592244206062A1','W369652276806062A1','W370822254506062A1','W371062238903062A1',
-            'W371092231407062A1','W371452238603062A1','W374122262603062A0','W374162270803062A1',
+            'W368192272607062A1', 'W368562273007062A1', 'W368782278903062A1', 'W369282250507062A1',
+            'W369592244206062A1', 'W369652276806062A1', 'W370822254506062A1', 'W371062238903062A1',
+            'W371092231407062A1', 'W371452238603062A1', 'W374122262603062A0', 'W374162270803062A1',
             'W374172270503062A1'
         ];
         
+        // 構建模型清單
         const models = [
             ...buildingFolders.map(f => ({ name: f, type: 'BUILDING', path: `${BASE_PATH}/BUILDING/${f}/${f}.glb` })),
             ...infrastructureFolders.map(f => ({ name: f, type: 'INFRASTRUCTURE', path: `${BASE_PATH}/INFRASTRUCTURE/${f}/${f}.glb` })),
             ...waterbodyFolders.map(f => ({ name: f, type: 'WATERBODY', path: `${BASE_PATH}/WATERBODY/${f}/${f}.glb` }))
         ];
         
-        // ========== Three.js 初始化 ==========
+        // ========== 全域變數 ==========
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x06080e);
+        
         const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 2, 50000);
-        const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance", precision: "mediump" });
+        const renderer = new THREE.WebGLRenderer({ 
+            antialias: false,
+            powerPreference: "high-performance",
+            precision: "mediump"
+        });
         renderer.setSize(window.innerWidth, window.innerHeight);
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
         document.body.appendChild(renderer.domElement);
         
         const controls = new OrbitControls(camera, renderer.domElement);
-        controls.enableDamping = true; controls.dampingFactor = 0.06;
-        controls.rotateSpeed = 1.0; controls.zoomSpeed = 1.2; controls.panSpeed = 0.8;
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.06;
+        controls.rotateSpeed = 1.0;
+        controls.zoomSpeed = 1.2;
+        controls.panSpeed = 0.8;
         
+        // 場景配置
         scene.add(new THREE.AmbientLight(0xffffff, 1.4));
-        const dLight = new THREE.DirectionalLight(0xffffff, 0.8); dLight.position.set(1, 2, 1); scene.add(dLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(1, 2, 1);
+        scene.add(directionalLight);
         scene.add(new THREE.AxesHelper(5000));
         
-        const masterGroup = new THREE.Group(); scene.add(masterGroup);
-        const gridHelper = new THREE.GridHelper(30000, 60, 0x3366aa, 0x1a2233); scene.add(gridHelper);
+        const masterGroup = new THREE.Group();
+        scene.add(masterGroup);
         
-        // Draco
+        const gridHelper = new THREE.GridHelper(30000, 60, 0x3366aa, 0x1a2233);
+        scene.add(gridHelper);
+        
+        // Draco Loader 配置
         const loader = new GLTFLoader();
         const dracoLoader = new DRACOLoader();
         dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
         loader.setDRACOLoader(dracoLoader);
         
-        // ========== 全域狀態 ==========
-        let frameCount = 0, lastTime = performance.now(), fps = 60;
-        let successCount = 0, failedCount = 0, unloadCount = 0;
+        // ========== 效能監控 ==========
+        let frameCount = 0;
+        let lastTime = performance.now();
+        let fps = 60;
+        let successCount = 0;
+        let failedCount = 0;
+        let unloadCount = 0;  // 卸載次數計數
         let activeLoads = 0;
         let loadQueue = [...models];
-        const loadedModels = new Map(); // name -> group
+        let isLoading = true;
         
-        // UI
+        // 視錐體裁減相關
+        const frustum = new THREE.Frustum();
+        const projScreenMatrix = new THREE.Matrix4();
+        let cullingEnabled = true;
+        
+        // 維護已載入模型 Map (name -> group)
+        const loadedModels = new Map();
+        
+        // 更新UI元素
         const statusSpan = document.getElementById('status');
         const positionSpan = document.getElementById('position-info');
         const debugSpan = document.getElementById('debug');
         const fpsSpan = document.getElementById('fps');
         const memCountSpan = document.getElementById('mem-count');
         const gcCountSpan = document.getElementById('gc-count');
-        const queueCountSpan = document.getElementById('queue-count');
-        queueCountSpan.textContent = models.length;
         
-        // ========== 卸載 ==========
+        // ========== 卸載單個模型 (完整清理) ==========
         function unloadModel(model) {
             if (!model || !model.parent) return;
+            
             model.traverse(child => {
                 if (child.isMesh) {
-                    child.geometry?.dispose();
+                    if (child.geometry) child.geometry.dispose();
                     if (child.material) {
-                        if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
-                        else child.material.dispose();
+                        if (Array.isArray(child.material)) {
+                            child.material.forEach(m => m.dispose());
+                        } else {
+                            child.material.dispose();
+                        }
                     }
                 }
             });
+            
             model.parent.remove(model);
+            
+            // 從已載入列表中移除
             const name = model.userData.name;
-            if (name && loadedModels.has(name)) loadedModels.delete(name);
-        }
-        
-        // 安全卸載最遠的模型 (僅在記憶體異常時使用)
-        function unloadFarthestModel() {
-            let farthestDist = -1, farthestModel = null;
-            const camPos = camera.position;
-            loadedModels.forEach(group => {
-                const c = group.userData.center;
-                if (!c) return;
-                const d = camPos.distanceTo(c);
-                if (d > farthestDist) { farthestDist = d; farthestModel = group; }
-            });
-            if (farthestModel) {
-                unloadModel(farthestModel);
-                unloadCount++;
-                gcCountSpan.textContent = unloadCount;
-                return true;
+            if (name && loadedModels.has(name)) {
+                loadedModels.delete(name);
             }
-            return false;
         }
         
-        // ========== 載入回調 ==========
-        function onModelLoaded(model, gltf) {
-            const obj = gltf.scene;
-            // 材質優化
-            obj.traverse(child => {
-                if (child.isMesh) {
-                    child.castShadow = false; child.receiveShadow = false;
-                    if (child.material) {
-                        child.material.roughness = 0.9; child.material.metalness = 0.1;
-                        if (child.material.map) child.material.map.anisotropy = 1;
-                    }
+        // ========== 根據距離卸載遠處模型 ==========
+        function updateDistanceUnloading() {
+            if (isLoading) return; // 載入過程中不卸載
+            
+            const camPos = camera.position;
+            const toUnload = [];
+            
+            loadedModels.forEach((group, name) => {
+                const center = group.userData.center;
+                if (!center) return;
+                
+                const dist = camPos.distanceTo(center);
+                if (dist > UNLOAD_DISTANCE) {
+                    toUnload.push(group);
                 }
             });
-            // 計算包圍球
-            const box = new THREE.Box3().setFromObject(obj);
-            const center = box.getCenter(new THREE.Vector3());
-            const radius = box.getSize(new THREE.Vector3()).length() / 2;
-            const sphere = new THREE.Sphere(center, Math.max(radius, 50));
-            obj.userData.center = center.clone();
-            obj.userData.boundingSphere = sphere;
-            obj.userData.name = model.name;
             
-            // 添加到場景
-            masterGroup.add(obj);
-            loadedModels.set(model.name, obj);
-            successCount++;
-            
-            // ★★★ 關鍵：立即檢查距離，如果太遠就卸載 (記憶體即時釋放)
-            const camPos = camera.position;
-            if (center.distanceTo(camPos) > UNLOAD_DISTANCE) {
-                unloadModel(obj);
-                unloadCount++;
+            if (toUnload.length > 0) {
+                toUnload.forEach(model => {
+                    unloadModel(model);
+                    unloadCount++;
+                });
                 gcCountSpan.textContent = unloadCount;
-            }
-            
-            // 額外安全機制：如果記憶體中模型數異常高，強制卸載最遠的
-            if (loadedModels.size > MAX_LOADED_MODELS_SAFETY) {
-                unloadFarthestModel();
+                debugSpan.innerHTML = `🗑️ 自動卸載 ${toUnload.length} 個遠景模型 | 當前保留: ${loadedModels.size} 個`;
             }
             
             memCountSpan.textContent = loadedModels.size;
-            statusSpan.innerHTML = `📦 載入中 | 成功 ${successCount}/${models.length} (${Math.round(successCount/models.length*100)}%)`;
+        }
+        
+        // ========== 手動強制清理所有遠景 (保留近景) ==========
+        function performManualGC() {
+            if (isLoading) return;
             
-            if (successCount === 1 || successCount % 50 === 0) updateCameraFocus();
+            const camPos = camera.position;
+            let released = 0;
             
-            activeLoads--;
-            // 繼續載入下一個
-            if (loadQueue.length > 0 && activeLoads < CONCURRENT_LOAD_LIMIT) {
-                loadNextBatch();
+            // 複製一份以避免迭代時修改
+            const allLoaded = Array.from(loadedModels.values());
+            allLoaded.forEach(group => {
+                const center = group.userData.center;
+                if (!center) return;
+                
+                if (camPos.distanceTo(center) > UNLOAD_DISTANCE) {
+                    unloadModel(group);
+                    released++;
+                }
+            });
+            
+            unloadCount += released;
+            gcCountSpan.textContent = unloadCount;
+            debugSpan.innerHTML = `🧹 手動清理完成: 卸載 ${released} 個模型 | 保留: ${loadedModels.size} 個`;
+            
+            // 主動觸發 GC (如果可用)
+            if (window.gc) {
+                window.gc();
             }
-            // 如果佇列已空，檢查是否全部完成
-            if (loadQueue.length === 0 && activeLoads === 0) finishLoading();
         }
         
-        function onModelError(model, error) {
-            console.warn(`⚠️ 載入失敗 [${model.name}]:`, error);
-            failedCount++;
-            activeLoads--;
-            queueCountSpan.textContent = loadQueue.length;
-            if (loadQueue.length > 0 && activeLoads < CONCURRENT_LOAD_LIMIT) loadNextBatch();
+        // ========== 視錐體裁減更新 ==========
+        function updateFrustumCulling() {
+            if (!cullingEnabled) return;
+            
+            camera.updateMatrixWorld();
+            camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+            projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+            frustum.setFromProjectionMatrix(projScreenMatrix);
+            
+            const cameraPos = camera.position;
+            let visibleCount = 0;
+            let culledCount = 0;
+            
+            // 只對已載入的模型進行視錐剔除
+            loadedModels.forEach(group => {
+                const center = group.userData.center;
+                const sphere = group.userData.boundingSphere;
+                if (!center || !sphere) return;
+                
+                const distance = cameraPos.distanceTo(center);
+                const withinDistance = distance < VISIBLE_DISTANCE;
+                const inFrustum = frustum.intersectsSphere(sphere);
+                const shouldBeVisible = withinDistance && inFrustum;
+                
+                if (group.visible !== shouldBeVisible) {
+                    group.visible = shouldBeVisible;
+                }
+                
+                if (shouldBeVisible) visibleCount++;
+                else culledCount++;
+            });
+            
+            if (frameCount % 30 === 0) {
+                debugSpan.innerHTML = `🎯 視錐體 | 可見: ${visibleCount} | 隱藏: ${culledCount} | 記憶體: ${loadedModels.size} 個`;
+            }
         }
         
+        // ========== 計算模型的包圍球 ==========
+        function computeBoundingSphere(obj) {
+            const box = new THREE.Box3().setFromObject(obj);
+            const center = box.getCenter(new THREE.Vector3());
+            const radius = box.getSize(new THREE.Vector3()).length() / 2;
+            return new THREE.Sphere(center, Math.max(radius, 50));
+        }
+        
+        // ========== 並行載入控制器 ==========
         function loadNextBatch() {
+            if (!isLoading) return;
             if (activeLoads >= CONCURRENT_LOAD_LIMIT) return;
-            if (loadQueue.length === 0) return;
+            if (loadQueue.length === 0) {
+                if (activeLoads === 0) {
+                    finishLoading();
+                }
+                return;
+            }
+            
             const model = loadQueue.shift();
             activeLoads++;
-            queueCountSpan.textContent = loadQueue.length;
-            loader.load(model.path,
-                (gltf) => onModelLoaded(model, gltf),
-                undefined,
-                (err) => onModelError(model, err)
+            
+            loader.load(model.path, 
+                (gltf) => {
+                    const obj = gltf.scene;
+                    
+                    // 優化材質設定
+                    obj.traverse(child => {
+                        if (child.isMesh) {
+                            child.castShadow = false;
+                            child.receiveShadow = false;
+                            if (child.material) {
+                                child.material.roughness = 0.9;
+                                child.material.metalness = 0.1;
+                                if (child.material.map) {
+                                    child.material.map.anisotropy = 1;
+                                }
+                            }
+                        }
+                    });
+                    
+                    // 計算包圍球和中心點
+                    const boundingSphere = computeBoundingSphere(obj);
+                    obj.userData.center = boundingSphere.center.clone();
+                    obj.userData.boundingSphere = boundingSphere;
+                    obj.userData.loaded = true;
+                    obj.userData.name = model.name;
+                    
+                    masterGroup.add(obj);
+                    loadedModels.set(model.name, obj);  // 記錄到 Map
+                    successCount++;
+                    
+                    // 更新UI
+                    memCountSpan.textContent = loadedModels.size;
+                    statusSpan.innerHTML = `📦 並行載入中 (${activeLoads} 線程) | ${successCount}/${models.length} (${Math.round((successCount/models.length)*100)}%)`;
+                    
+                    if (successCount === 1 || successCount % 50 === 0) {
+                        updateCameraFocus();
+                    }
+                    
+                    activeLoads--;
+                    loadNextBatch();
+                },
+                undefined, // 進度回調省略
+                (error) => {
+                    console.warn(`⚠️ 載入失敗 [${model.name}]:`, error);
+                    failedCount++;
+                    activeLoads--;
+                    loadNextBatch();
+                }
             );
-            // 嘗試啟動更多並行載入
+            
+            // 繼續觸發更多載入
             if (activeLoads < CONCURRENT_LOAD_LIMIT && loadQueue.length > 0) {
                 setTimeout(() => loadNextBatch(), 0);
             }
         }
         
         function finishLoading() {
-            statusSpan.innerHTML = `✅ 載入完成 | 成功 ${successCount} | 失敗 ${failedCount}`;
-            dracoLoader.dispose();
-            debugSpan.innerHTML = `✨ 完成 | 記憶體中保留 ${loadedModels.size} 個模型`;
+            isLoading = false;
+            statusSpan.innerHTML = `✅ 載入完成 | 成功: ${successCount} | 失敗: ${failedCount}`;
+            
+            // 載入完成後立即執行一次距離卸載，清理遠景
+            setTimeout(() => {
+                updateDistanceUnloading();
+                dracoLoader.dispose();
+                debugSpan.innerHTML = `✨ 載入完成 | 記憶體中保留 ${loadedModels.size} 個模型`;
+            }, 500);
         }
         
+        // ========== 相機自動對焦 ==========
         function updateCameraFocus() {
             if (masterGroup.children.length === 0) return;
+            
             const box = new THREE.Box3().setFromObject(masterGroup);
             const center = box.getCenter(new THREE.Vector3());
             const size = box.getSize(new THREE.Vector3());
-            if (gridHelper) gridHelper.position.set(center.x, box.min.y - 10, center.z);
-            const maxDim = Math.max(size.x, size.z, 500);
+            
+            if (gridHelper) {
+                gridHelper.position.set(center.x, box.min.y - 10, center.z);
+            }
+            
+            const maxDimension = Math.max(size.x, size.z, 500);
             const fovRad = camera.fov * Math.PI / 180;
-            let dist = maxDim / (2 * Math.tan(fovRad / 2)) * 1.2;
-            dist = Math.min(Math.max(dist, 800), 8000);
+            let optimalDistance = maxDimension / (2 * Math.tan(fovRad / 2)) * 1.2;
+            optimalDistance = Math.min(Math.max(optimalDistance, 800), 8000);
+            
             if (successCount <= 10 || successCount === models.length) {
-                camera.position.set(center.x + dist*0.6, center.y + dist*0.4, center.z + dist*0.6);
+                camera.position.set(center.x + optimalDistance * 0.6, center.y + optimalDistance * 0.4, center.z + optimalDistance * 0.6);
                 controls.target.copy(center);
                 controls.update();
             }
-            positionSpan.innerHTML = `📍 範圍: X:${center.x.toFixed(0)} Z:${center.z.toFixed(0)} | 跨度:${Math.round(maxDim)}m`;
+            
+            positionSpan.innerHTML = `📍 範圍: X:${center.x.toFixed(0)} Z:${center.z.toFixed(0)} | 範圍:${Math.round(maxDimension)}m`;
         }
         
-        // ========== FPS ==========
+        // ========== FPS 計算 ==========
         function updateFPS() {
             frameCount++;
             const now = performance.now();
-            if (now - lastTime >= 1000) {
-                fps = Math.round((frameCount * 1000) / (now - lastTime));
+            const delta = now - lastTime;
+            if (delta >= 1000) {
+                fps = Math.round((frameCount * 1000) / delta);
                 fpsSpan.textContent = fps;
-                frameCount = 0; lastTime = now;
-            }
-        }
-        
-        // ========== 視錐剔除 ==========
-        const frustum = new THREE.Frustum();
-        const projScreenMatrix = new THREE.Matrix4();
-        function updateFrustumCulling() {
-            camera.updateMatrixWorld();
-            camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
-            projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-            frustum.setFromProjectionMatrix(projScreenMatrix);
-            const camPos = camera.position;
-            let visible = 0, culled = 0;
-            loadedModels.forEach(group => {
-                const c = group.userData.center, s = group.userData.boundingSphere;
-                if (!c || !s) return;
-                const inDist = camPos.distanceTo(c) < VISIBLE_DISTANCE;
-                const inFrustum = frustum.intersectsSphere(s);
-                group.visible = inDist && inFrustum;
-                if (group.visible) visible++; else culled++;
-            });
-            if (frameCount % 30 === 0) {
-                debugSpan.innerHTML = `🎯 視錐: 可見${visible} 隱藏${culled} | 記憶體: ${loadedModels.size}`;
+                frameCount = 0;
+                lastTime = now;
             }
         }
         
         // ========== 動畫循環 ==========
         let frameIndex = 0;
+        
         function animate() {
             requestAnimationFrame(animate);
+            
             controls.update();
             updateFPS();
-            if (frameIndex % FRUSTUM_CULLING_INTERVAL === 0) updateFrustumCulling();
-            if (frameIndex % STREAMING_CHECK_INTERVAL === 0) {
-                // 週期性清理遠景 (處理相機移動後超出距離的模型)
-                const camPos = camera.position;
-                const toUnload = [];
-                loadedModels.forEach(group => {
-                    const c = group.userData.center;
-                    if (c && camPos.distanceTo(c) > UNLOAD_DISTANCE) toUnload.push(group);
-                });
-                toUnload.forEach(m => { unloadModel(m); unloadCount++; });
-                if (toUnload.length > 0) gcCountSpan.textContent = unloadCount;
-                memCountSpan.textContent = loadedModels.size;
+            
+            // 定期更新視錐體裁減
+            if (frameIndex % FRUSTUM_CULLING_INTERVAL === 0 && !isLoading) {
+                updateFrustumCulling();
             }
+            
+            // 定期檢查距離卸載 (獨立於視錐)
+            if (frameIndex % STREAMING_CHECK_INTERVAL === 0 && !isLoading) {
+                updateDistanceUnloading();
+            }
+            
             renderer.render(scene, camera);
             frameIndex++;
         }
         
-        // ========== 手動GC ==========
+        // ========== 手動GC按鈕 ==========
         document.getElementById('manual-gc-btn').addEventListener('click', () => {
-            const camPos = camera.position;
-            let removed = 0;
-            const all = Array.from(loadedModels.values());
-            all.forEach(group => {
-                const c = group.userData.center;
-                if (c && camPos.distanceTo(c) > UNLOAD_DISTANCE) {
-                    unloadModel(group);
-                    removed++;
-                }
-            });
-            unloadCount += removed;
-            gcCountSpan.textContent = unloadCount;
-            debugSpan.innerHTML = `🧹 手動清理 ${removed} 個遠景 | 保留 ${loadedModels.size}`;
-            if (window.gc) window.gc();
+            performManualGC();
         });
         
-        // ========== 啟動 ==========
-        function start() {
-            statusSpan.innerHTML = `🚀 即時卸載模式 | 距離閾值: ${UNLOAD_DISTANCE}m`;
-            camera.position.set(3000, 2000, 4000);
-            controls.target.set(0,0,0);
-            controls.update();
-            for (let i = 0; i < CONCURRENT_LOAD_LIMIT; i++) loadNextBatch();
-            animate();
-        }
-        
-        window.addEventListener('resize', () => {
+        // ========== 窗口大小適配 ==========
+        window.addEventListener('resize', onWindowResize, false);
+        function onWindowResize() {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
-        });
+        }
+        
+        // ========== 啟動引擎 ==========
+        function start() {
+            statusSpan.innerHTML = `🚀 啟動並行引擎 (並行數: ${CONCURRENT_LOAD_LIMIT})...`;
+            camera.position.set(3000, 2000, 4000);
+            controls.target.set(0, 0, 0);
+            controls.update();
+            
+            // 開始並行載入
+            for (let i = 0; i < CONCURRENT_LOAD_LIMIT; i++) {
+                loadNextBatch();
+            }
+            
+            animate();
+        }
         
         start();
-        console.log('✅ 即時距離卸載版已啟動');
+        
+        // 定期自動清理遠景 (每30秒)
+        setInterval(() => {
+            if (!isLoading) {
+                updateDistanceUnloading();
+            }
+        }, 30000);
+        
+        console.log('✅ HK Digital Twin 優化版已啟動 (距離卸載模式)');
     </script>
 </body>
 </html>
