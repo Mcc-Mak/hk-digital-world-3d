@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>HK Digital Twin - 記憶體安全版 | 上限30模型</title>
+    <title>HK Digital Twin - 即時距離卸載版 | 記憶體安全</title>
     <style>
         body { margin: 0; overflow: hidden; font-family: monospace; background-color: #06080e; }
         #info {
@@ -40,7 +40,7 @@
 </head>
 <body>
     <div id="info">
-        🏙️ HK DIGITAL TWIN | 記憶體安全版<br>
+        🏙️ HK DIGITAL TWIN | 即時距離卸載<br>
         <span id="status">初始化 Draco 引擎...</span><br>
         <span id="position-info">定位中...</span>
     </div>
@@ -78,10 +78,10 @@
         const BASE_PATH = 'https://pub-d1e0333f70164895aaa658884b8735dd.r2.dev/wong-tai-sin';
         const CONCURRENT_LOAD_LIMIT = 6;       // 同時下載數
         const FRUSTUM_CULLING_INTERVAL = 15;    // 視錐剔除間隔 (幀)
-        const UNLOAD_DISTANCE = 700;            // 超過此距離 (米) 自動卸載
+        const UNLOAD_DISTANCE = 700;            // 超過此距離 (米) 立即卸載
         const STREAMING_CHECK_INTERVAL = 45;    // 距離檢查間隔 (幀)
-        const VISIBLE_DISTANCE = 25000;         // 最大可見距離
-        const MAX_LOADED_MODELS = 30;           // 記憶體中最多保留的模型數 (嚴格上限)
+        const VISIBLE_DISTANCE = 25000;         // 最大可見距離 (用於視錐剔除)
+        const MAX_LOADED_MODELS_SAFETY = 50;    // 安全上限 (僅在異常時觸發)
         
         // ========== 建築物註冊表 ==========
         const buildingFolders = [
@@ -151,11 +151,8 @@
         // ========== Three.js 初始化 ==========
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x06080e);
-        
         const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 2, 50000);
-        const renderer = new THREE.WebGLRenderer({ 
-            antialias: false, powerPreference: "high-performance", precision: "mediump"
-        });
+        const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance", precision: "mediump" });
         renderer.setSize(window.innerWidth, window.innerHeight);
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
         document.body.appendChild(renderer.domElement);
@@ -165,14 +162,13 @@
         controls.rotateSpeed = 1.0; controls.zoomSpeed = 1.2; controls.panSpeed = 0.8;
         
         scene.add(new THREE.AmbientLight(0xffffff, 1.4));
-        const dLight = new THREE.DirectionalLight(0xffffff, 0.8);
-        dLight.position.set(1, 2, 1); scene.add(dLight);
+        const dLight = new THREE.DirectionalLight(0xffffff, 0.8); dLight.position.set(1, 2, 1); scene.add(dLight);
         scene.add(new THREE.AxesHelper(5000));
         
         const masterGroup = new THREE.Group(); scene.add(masterGroup);
         const gridHelper = new THREE.GridHelper(30000, 60, 0x3366aa, 0x1a2233); scene.add(gridHelper);
         
-        // Draco 設定
+        // Draco
         const loader = new GLTFLoader();
         const dracoLoader = new DRACOLoader();
         dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
@@ -182,10 +178,10 @@
         let frameCount = 0, lastTime = performance.now(), fps = 60;
         let successCount = 0, failedCount = 0, unloadCount = 0;
         let activeLoads = 0;
-        let loadQueue = [...models];               // 待載入隊列
-        const loadedModels = new Map();            // name -> group
+        let loadQueue = [...models];
+        const loadedModels = new Map(); // name -> group
         
-        // UI 元素
+        // UI
         const statusSpan = document.getElementById('status');
         const positionSpan = document.getElementById('position-info');
         const debugSpan = document.getElementById('debug');
@@ -195,16 +191,15 @@
         const queueCountSpan = document.getElementById('queue-count');
         queueCountSpan.textContent = models.length;
         
-        // ========== 卸載邏輯 ==========
+        // ========== 卸載 ==========
         function unloadModel(model) {
             if (!model || !model.parent) return;
             model.traverse(child => {
                 if (child.isMesh) {
                     child.geometry?.dispose();
                     if (child.material) {
-                        if (Array.isArray(child.material)) {
-                            child.material.forEach(m => m.dispose());
-                        } else child.material.dispose();
+                        if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
+                        else child.material.dispose();
                     }
                 }
             });
@@ -213,7 +208,7 @@
             if (name && loadedModels.has(name)) loadedModels.delete(name);
         }
         
-        // 卸載離相機最遠的模型 (用於記憶體超限時)
+        // 安全卸載最遠的模型 (僅在記憶體異常時使用)
         function unloadFarthestModel() {
             let farthestDist = -1, farthestModel = null;
             const camPos = camera.position;
@@ -221,9 +216,7 @@
                 const c = group.userData.center;
                 if (!c) return;
                 const d = camPos.distanceTo(c);
-                if (d > farthestDist) {
-                    farthestDist = d; farthestModel = group;
-                }
+                if (d > farthestDist) { farthestDist = d; farthestModel = group; }
             });
             if (farthestModel) {
                 unloadModel(farthestModel);
@@ -234,92 +227,89 @@
             return false;
         }
         
-        // 距離為基礎的自動卸載
-        function updateDistanceUnloading() {
-            const camPos = camera.position;
-            const toUnload = [];
-            loadedModels.forEach(group => {
-                const c = group.userData.center;
-                if (!c) return;
-                if (camPos.distanceTo(c) > UNLOAD_DISTANCE) toUnload.push(group);
+        // ========== 載入回調 ==========
+        function onModelLoaded(model, gltf) {
+            const obj = gltf.scene;
+            // 材質優化
+            obj.traverse(child => {
+                if (child.isMesh) {
+                    child.castShadow = false; child.receiveShadow = false;
+                    if (child.material) {
+                        child.material.roughness = 0.9; child.material.metalness = 0.1;
+                        if (child.material.map) child.material.map.anisotropy = 1;
+                    }
+                }
             });
-            toUnload.forEach(m => { unloadModel(m); unloadCount++; });
-            if (toUnload.length > 0) gcCountSpan.textContent = unloadCount;
-            memCountSpan.textContent = loadedModels.size;
-            // 如果卸載後有空位，且佇列中還有模型，喚醒載入
-            if (loadedModels.size < MAX_LOADED_MODELS && loadQueue.length > 0) {
-                wakeUpLoading();
+            // 計算包圍球
+            const box = new THREE.Box3().setFromObject(obj);
+            const center = box.getCenter(new THREE.Vector3());
+            const radius = box.getSize(new THREE.Vector3()).length() / 2;
+            const sphere = new THREE.Sphere(center, Math.max(radius, 50));
+            obj.userData.center = center.clone();
+            obj.userData.boundingSphere = sphere;
+            obj.userData.name = model.name;
+            
+            // 添加到場景
+            masterGroup.add(obj);
+            loadedModels.set(model.name, obj);
+            successCount++;
+            
+            // ★★★ 關鍵：立即檢查距離，如果太遠就卸載 (記憶體即時釋放)
+            const camPos = camera.position;
+            if (center.distanceTo(camPos) > UNLOAD_DISTANCE) {
+                unloadModel(obj);
+                unloadCount++;
+                gcCountSpan.textContent = unloadCount;
             }
-        }
-        
-        // ========== 載入控制 ==========
-        function wakeUpLoading() {
-            // 啟動多個並行載入，直到達到上限或隊列空
-            while (activeLoads < CONCURRENT_LOAD_LIMIT && loadQueue.length > 0 && loadedModels.size < MAX_LOADED_MODELS) {
+            
+            // 額外安全機制：如果記憶體中模型數異常高，強制卸載最遠的
+            if (loadedModels.size > MAX_LOADED_MODELS_SAFETY) {
+                unloadFarthestModel();
+            }
+            
+            memCountSpan.textContent = loadedModels.size;
+            statusSpan.innerHTML = `📦 載入中 | 成功 ${successCount}/${models.length} (${Math.round(successCount/models.length*100)}%)`;
+            
+            if (successCount === 1 || successCount % 50 === 0) updateCameraFocus();
+            
+            activeLoads--;
+            // 繼續載入下一個
+            if (loadQueue.length > 0 && activeLoads < CONCURRENT_LOAD_LIMIT) {
                 loadNextBatch();
             }
+            // 如果佇列已空，檢查是否全部完成
+            if (loadQueue.length === 0 && activeLoads === 0) finishLoading();
+        }
+        
+        function onModelError(model, error) {
+            console.warn(`⚠️ 載入失敗 [${model.name}]:`, error);
+            failedCount++;
+            activeLoads--;
+            queueCountSpan.textContent = loadQueue.length;
+            if (loadQueue.length > 0 && activeLoads < CONCURRENT_LOAD_LIMIT) loadNextBatch();
         }
         
         function loadNextBatch() {
             if (activeLoads >= CONCURRENT_LOAD_LIMIT) return;
             if (loadQueue.length === 0) return;
-            if (loadedModels.size >= MAX_LOADED_MODELS) return; // 記憶體已滿，暫停
-            
             const model = loadQueue.shift();
             activeLoads++;
             queueCountSpan.textContent = loadQueue.length;
-            
             loader.load(model.path,
-                (gltf) => {
-                    const obj = gltf.scene;
-                    // 材質優化
-                    obj.traverse(child => {
-                        if (child.isMesh) {
-                            child.castShadow = false; child.receiveShadow = false;
-                            if (child.material) {
-                                child.material.roughness = 0.9; child.material.metalness = 0.1;
-                                if (child.material.map) child.material.map.anisotropy = 1;
-                            }
-                        }
-                    });
-                    // 計算包圍球
-                    const box = new THREE.Box3().setFromObject(obj);
-                    const center = box.getCenter(new THREE.Vector3());
-                    const radius = box.getSize(new THREE.Vector3()).length() / 2;
-                    const sphere = new THREE.Sphere(center, Math.max(radius, 50));
-                    obj.userData.center = center.clone();
-                    obj.userData.boundingSphere = sphere;
-                    obj.userData.name = model.name;
-                    
-                    masterGroup.add(obj);
-                    loadedModels.set(model.name, obj);
-                    successCount++;
-                    
-                    // 如果超出記憶體上限，立刻卸載最遠模型
-                    if (loadedModels.size > MAX_LOADED_MODELS) {
-                        unloadFarthestModel();
-                    }
-                    
-                    memCountSpan.textContent = loadedModels.size;
-                    statusSpan.innerHTML = `📦 載入中 | 成功 ${successCount}/${models.length} (${Math.round(successCount/models.length*100)}%)`;
-                    
-                    if (successCount === 1 || successCount % 50 === 0) updateCameraFocus();
-                    
-                    activeLoads--;
-                    // 有空位時繼續載入後續
-                    if (loadedModels.size < MAX_LOADED_MODELS && loadQueue.length > 0) {
-                        wakeUpLoading();
-                    }
-                },
+                (gltf) => onModelLoaded(model, gltf),
                 undefined,
-                (error) => {
-                    console.warn(`⚠️ 載入失敗 [${model.name}]:`, error);
-                    failedCount++;
-                    activeLoads--;
-                    queueCountSpan.textContent = loadQueue.length;
-                    if (loadedModels.size < MAX_LOADED_MODELS && loadQueue.length > 0) wakeUpLoading();
-                }
+                (err) => onModelError(model, err)
             );
+            // 嘗試啟動更多並行載入
+            if (activeLoads < CONCURRENT_LOAD_LIMIT && loadQueue.length > 0) {
+                setTimeout(() => loadNextBatch(), 0);
+            }
+        }
+        
+        function finishLoading() {
+            statusSpan.innerHTML = `✅ 載入完成 | 成功 ${successCount} | 失敗 ${failedCount}`;
+            dracoLoader.dispose();
+            debugSpan.innerHTML = `✨ 完成 | 記憶體中保留 ${loadedModels.size} 個模型`;
         }
         
         function updateCameraFocus() {
@@ -370,11 +360,11 @@
                 if (group.visible) visible++; else culled++;
             });
             if (frameCount % 30 === 0) {
-                debugSpan.innerHTML = `🎯 視錐: 可見${visible} 隱藏${culled} | 記憶體中: ${loadedModels.size}`;
+                debugSpan.innerHTML = `🎯 視錐: 可見${visible} 隱藏${culled} | 記憶體: ${loadedModels.size}`;
             }
         }
         
-        // ========== 動畫迴圈 ==========
+        // ========== 動畫循環 ==========
         let frameIndex = 0;
         function animate() {
             requestAnimationFrame(animate);
@@ -382,17 +372,22 @@
             updateFPS();
             if (frameIndex % FRUSTUM_CULLING_INTERVAL === 0) updateFrustumCulling();
             if (frameIndex % STREAMING_CHECK_INTERVAL === 0) {
-                updateDistanceUnloading();
-                // 若佇列仍有模型且記憶體未滿，確保載入進行中
-                if (loadQueue.length > 0 && loadedModels.size < MAX_LOADED_MODELS && activeLoads < CONCURRENT_LOAD_LIMIT) {
-                    wakeUpLoading();
-                }
+                // 週期性清理遠景 (處理相機移動後超出距離的模型)
+                const camPos = camera.position;
+                const toUnload = [];
+                loadedModels.forEach(group => {
+                    const c = group.userData.center;
+                    if (c && camPos.distanceTo(c) > UNLOAD_DISTANCE) toUnload.push(group);
+                });
+                toUnload.forEach(m => { unloadModel(m); unloadCount++; });
+                if (toUnload.length > 0) gcCountSpan.textContent = unloadCount;
+                memCountSpan.textContent = loadedModels.size;
             }
             renderer.render(scene, camera);
             frameIndex++;
         }
         
-        // ========== 手動GC按鈕 ==========
+        // ========== 手動GC ==========
         document.getElementById('manual-gc-btn').addEventListener('click', () => {
             const camPos = camera.position;
             let removed = 0;
@@ -412,11 +407,10 @@
         
         // ========== 啟動 ==========
         function start() {
-            statusSpan.innerHTML = `🚀 記憶體安全模式 | 上限 ${MAX_LOADED_MODELS} 模型`;
+            statusSpan.innerHTML = `🚀 即時卸載模式 | 距離閾值: ${UNLOAD_DISTANCE}m`;
             camera.position.set(3000, 2000, 4000);
             controls.target.set(0,0,0);
             controls.update();
-            // 初始填入並行載入
             for (let i = 0; i < CONCURRENT_LOAD_LIMIT; i++) loadNextBatch();
             animate();
         }
@@ -428,7 +422,7 @@
         });
         
         start();
-        console.log('✅ 記憶體安全版已啟動 | 上限', MAX_LOADED_MODELS);
+        console.log('✅ 即時距離卸載版已啟動');
     </script>
 </body>
 </html>
